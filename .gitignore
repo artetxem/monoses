@@ -1,0 +1,10 @@
+private/
+third-party/
+evaluate.py
+
+*~
+.DS_Store
+__pycache__/
+*.py[cod]
+*$py.class
+.idea/
