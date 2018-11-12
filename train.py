@@ -155,8 +155,10 @@ def train_supervised(args, train_src, train_trg, dev_src, dev_trg, lm_path, lm_o
              args.tmp + '/phrase-table.gz',
              args.tmp + '/reordering-table.wbe-msd-bidirectional-fe.gz',
              prune=args.pt_prune)
-    os.remove(args.tmp + '/phrase-table.gz')
-    os.remove(args.tmp + '/reordering-table.wbe-msd-bidirectional-fe.gz')
+    # os.remove(args.tmp + '/phrase-table.gz')
+    # os.remove(args.tmp + '/reordering-table.wbe-msd-bidirectional-fe.gz')
+    shutil.move(args.tmp + '/phrase-table.gz', output_dir + '/phrase-table.gz')
+    shutil.move(args.tmp + '/reordering-table.wbe-msd-bidirectional-fe.gz', output_dir + '/reordering-table.wbe-msd-bidirectional-fe.gz')
 
     # MERT
     bash(quote(MOSES + '/scripts/training/mert-moses.pl') +
@@ -303,7 +305,7 @@ def induce_phrase_table(args):
     root = args.working + '/step5'
     os.mkdir(root)
     bash('export OMP_NUM_THREADS=' + str(args.threads) + ';'
-         ' python3 '  + quote(TRAINING + '/induce-phrase-table.py') +
+         ' python3 ' + quote(TRAINING + '/induce-phrase-table.py') +
          ' --src ' + quote(args.working + '/step4/emb.src') +
          ' --trg ' + quote(args.working + '/step4/emb.trg') +
          ' --src2trg ' + quote(args.tmp + '/src2trg.phrase-table') +
@@ -373,6 +375,34 @@ def unsupervised_tuning(args):
     shutil.copy(root + '/trg2src.it{0}.moses.ini'.format(args.tuning_iter), root + '/trg2src.moses.ini')
 
 
+# Step 7 (alt): Supervised tuning
+def supervised_tuning(args):
+    root = args.working + '/step7'
+    os.mkdir(root)
+    for i, part, lang in (0, 'src', args.src_lang), (1, 'trg', args.trg_lang):
+        bash(quote(MOSES + '/scripts/tokenizer/tokenizer.perl') +
+             ' -l ' + quote(lang) + ' -threads ' + str(args.threads) +
+             ' < ' + quote(args.supervised_tuning[i]) +
+             ' | ' + quote(MOSES + '/scripts/recaser/truecase.perl') +
+             ' --model ' + quote(args.working + '/step1/truecase-model.' + part) +
+             ' > ' + quote(args.tmp + '/dev.true.' + part))
+    for src, trg in ('src', 'trg'), ('trg', 'src'):
+        bash(quote(MOSES + '/scripts/training/mert-moses.pl') +
+             ' ' + quote(args.tmp + '/dev.true.' + src) +
+             ' ' + quote(args.tmp + '/dev.true.' + trg) +
+             ' ' + quote(MOSES + '/bin/moses2') +
+             ' ' + args.working + '/step6/' + src + '2' + trg + '.moses.ini' +
+             ' --no-filter-phrase-table' +
+             ' --mertdir ' + quote(MOSES + '/bin/') +
+             ' --threads ' + str(args.threads) +
+             ' --decoder-flags="-threads ' + str(args.threads) + '"' +
+             ' --working-dir ' + quote(os.path.abspath(args.tmp + '/mert')))
+        shutil.move(args.tmp + '/mert/moses.ini', root + '/' + src + '2' + trg + '.moses.ini')
+        shutil.rmtree(args.tmp + '/mert')
+    os.remove(args.tmp + '/dev.true.src')
+    os.remove(args.tmp + '/dev.true.trg')
+
+
 # Step 8: Iterative backtranslation
 def iterative_backtranslation(args):
     root = args.working + '/step8'
@@ -383,6 +413,14 @@ def iterative_backtranslation(args):
         bash('head -' + str(args.backtranslation_sentences) +
              ' ' + quote(args.working + '/step1/train.true.' + part) +
              ' > ' + quote(args.tmp + '/train.' + part))
+    if args.supervised_tuning is not None:
+        for i, part, lang in (0, 'src', args.src_lang), (1, 'trg', args.trg_lang):
+            bash(quote(MOSES + '/scripts/tokenizer/tokenizer.perl') +
+                 ' -l ' + quote(lang) + ' -threads ' + str(args.threads) +
+                 ' < ' + quote(args.supervised_tuning[i]) +
+                 ' | ' + quote(MOSES + '/scripts/recaser/truecase.perl') +
+                 ' --model ' + quote(args.working + '/step1/truecase-model.' + part) +
+                 ' > ' + quote(args.tmp + '/dev.true.' + part))
     for it in range(1, args.backtranslation_iter + 1):
         for src, trg in ('src', 'trg'), ('trg', 'src'):
             # TODO Use cube pruning?
@@ -392,28 +430,38 @@ def iterative_backtranslation(args):
                  ' < ' + quote(args.tmp + '/train.' + trg) +
                  ' > ' + quote(args.tmp + '/train.bt') +
                  ' 2> /dev/null')
-            bash(quote(MOSES + '/bin/moses2') +
-                 ' -f ' + quote(config[(trg, src)]) + 
-                 ' --threads ' + str(args.threads) +
-                 ' < ' + quote(args.working + '/step1/dev.true.' + trg) +
-                 ' > ' + quote(args.tmp + '/dev.bt') +
-                 ' 2> /dev/null')
+            if args.supervised_tuning is not None:
+                src_dev = args.tmp + '/dev.true.' + src
+                trg_dev = args.tmp + '/dev.true.' + trg
+            else:
+                bash(quote(MOSES + '/bin/moses2') +
+                     ' -f ' + quote(config[(trg, src)]) +
+                     ' --threads ' + str(args.threads) +
+                     ' < ' + quote(args.working + '/step1/dev.true.' + trg) +
+                     ' > ' + quote(args.tmp + '/dev.bt') +
+                     ' 2> /dev/null')
+                src_dev = args.tmp + '/dev.bt'
+                trg_dev = args.working + '/step1/dev.true.' + trg
             train_supervised(args,
                              args.tmp + '/train.bt',
                              args.tmp + '/train.' + trg,
-                             args.tmp + '/dev.bt',
-                             args.working + '/step1/dev.true.' + trg,
+                             src_dev,
+                             trg_dev,
                              args.working + '/step2/' + trg + '.blm',
                              args.lm_order,
                              root + '/' + src + '2' + trg + '-it' + str(it))
-            os.remove(args.tmp + '/train.bt')
-            os.remove(args.tmp + '/dev.bt')
+            # os.remove(args.tmp + '/train.bt')
+            shutil.move(args.tmp + '/train.bt', root + '/' + src + '2' + trg + '-it' + str(it) + '/train.bt')
+            if args.supervised_tuning is None:
+                os.remove(args.tmp + '/dev.bt')
             config[(src, trg)] = root + '/' + src + '2' + trg + '-it' + str(it) + '/moses.ini'
 
     shutil.copy(config[('src', 'trg')], args.working + '/src2trg.moses.ini')
     shutil.copy(config[('trg', 'src')], args.working + '/trg2src.moses.ini')
-    os.remove(args.tmp + '/train.src')
-    os.remove(args.tmp + '/train.trg')
+    # os.remove(args.tmp + '/train.src')
+    # os.remove(args.tmp + '/train.trg')
+    shutil.move(args.tmp + '/train.src', root + '/train.src')
+    shutil.move(args.tmp + '/train.trg', root + '/train.trg')
 
 
 def main():
@@ -449,6 +497,7 @@ def main():
 
     tuning_group = parser.add_argument_group('Step 7', 'Unsupervised tuning')
     tuning_group.add_argument('--tuning-iter', metavar='N', type=int, default=10, help='Number of unsupervised tuning iterations (defaults to 10)')
+    tuning_group.add_argument('--supervised-tuning', metavar='PATH', nargs=2, help='Parallel corpus for supervised tuning (source/target)')  # TODO Also used for iterative backtranslation
 
     backtranslation_group = parser.add_argument_group('Step 8', 'Iterative backtranslation')
     backtranslation_group.add_argument('--backtranslation-iter', metavar='N', type=int, default=3, help='Number of backtranslation iterations (defaults to 3)')
@@ -475,7 +524,10 @@ def main():
         if args.from_step <= 6 <= args.to_step:
             build_initial_model(args)
         if args.from_step <= 7 <= args.to_step:
-            unsupervised_tuning(args)
+            if args.supervised_tuning is not None:
+                supervised_tuning(args)
+            else:
+                unsupervised_tuning(args)
         if args.from_step <= 8 <= args.to_step:
             iterative_backtranslation(args)
 
