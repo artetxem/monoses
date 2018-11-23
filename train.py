@@ -15,6 +15,7 @@
 
 import argparse
 import glob
+import gzip
 import os
 import shutil
 import subprocess
@@ -66,7 +67,7 @@ def binarize(output_config, output_pt, lm_path, lm_order, phrase_table, reorderi
         print('UnknownWordPenalty', file=f)
         print('WordPenalty', file=f)
         print('PhrasePenalty', file=f)
-        print('ProbingPT name=TranslationModel0 num-features=4' + 
+        print('ProbingPT name=TranslationModel0 num-features=4' +
               ' path=' + output_pt + ' input-factor=0 output-factor=0', file=f)
         if reordering is not None:
             print('LexicalReordering name=LexicalReordering0' +
@@ -85,95 +86,6 @@ def binarize(output_config, output_pt, lm_path, lm_order, phrase_table, reorderi
             print('LexicalReordering0= 0.3 0.3 0.3 0.3 0.3 0.3', file=f)
         print('Distortion0= 0.3', file=f)
         print('LM0= 0.5', file=f)
-
-
-def train_supervised(args, train_src, train_trg, dev_src, dev_trg, lm_path, lm_order, output_dir):
-    lm_path = os.path.abspath(lm_path)
-    output_dir = os.path.abspath(output_dir)
-    tmp = args.tmp + '/train-supervised'
-    os.mkdir(tmp)
-
-    # Copy the corpus
-    shutil.copy(train_src, tmp + '/corpus.src')
-    shutil.copy(train_trg, tmp + '/corpus.trg')
-
-    # Corpus cleaning
-    bash(quote(MOSES + '/scripts/training/clean-corpus-n.perl') +
-         ' ' + quote(tmp + '/corpus') + ' src trg' +
-         ' ' + quote(tmp + '/clean') +
-         ' ' + str(args.min_tokens) + ' ' + str(args.max_tokens))  # TODO Reusing min/max from step 1
-    os.remove(tmp + '/corpus.src')
-    os.remove(tmp + '/corpus.trg')
-
-    # Merge both languages into a single file
-    bash('paste -d " ||| " ' + quote(tmp + '/clean.src') +
-         ' /dev/null /dev/null /dev/null /dev/null ' + quote(tmp + '/clean.trg') +
-         ' > ' + quote(tmp + '/clean.txt'))
-
-    # Align
-    bash(quote(FAST_ALIGN + '/fast_align') +
-         ' -i ' + quote(tmp + '/clean.txt') + ' -d -o -v' +
-         ' > ' + quote(tmp + '/forward.align'))
-    bash(quote(FAST_ALIGN + '/fast_align') +
-         ' -i ' + quote(tmp + '/clean.txt') + ' -d -o -v -r' +
-         ' > ' + quote(tmp + '/reverse.align'))
-    os.remove(tmp + '/clean.txt')
-
-    # Symmetrization
-    bash(quote(FAST_ALIGN + '/atools') +
-         ' -i ' + quote(tmp + '/forward.align') +
-         ' -j ' + quote(tmp + '/reverse.align') +
-         ' -c grow-diag-final-and' +
-         ' > ' + quote(tmp + '/aligned.grow-diag-final-and'))
-    os.remove(tmp + '/forward.align')
-    os.remove(tmp + '/reverse.align')
-
-    # Build model
-    bash(quote(MOSES + '/scripts/training/train-model.perl') +
-         ' -model-dir ' + quote(tmp) +
-         ' -corpus ' + quote(tmp) + '/clean' +
-         ' -f src -e trg' +
-         ' -alignment grow-diag-final-and' +
-         ' -reordering msd-bidirectional-fe' +
-         ' -max-phrase-length 5' +
-         ' -temp-dir ' + quote(tmp + '/tmp') +
-         ' -lm "0:{}:{}:8"'.format(lm_order, lm_path) +
-         ' -first-step 4' +
-         ' -score-options="-MinScore 2:0.0001"' +
-         ' -cores ' + str(args.threads) +
-         ' -parallel -sort-buffer-size 10G -sort-batch-size 253 -sort-compress gzip' +
-         ' -sort-parallel ' + str(args.threads))
-    shutil.move(tmp + '/phrase-table.gz', args.tmp)
-    shutil.move(tmp + '/reordering-table.wbe-msd-bidirectional-fe.gz', args.tmp)
-    shutil.rmtree(tmp)
-
-    # Binarize model
-    binarize(args.tmp + '/moses.ini',
-             output_dir + '/probing-table',
-             lm_path,
-             lm_order,
-             args.tmp + '/phrase-table.gz',
-             args.tmp + '/reordering-table.wbe-msd-bidirectional-fe.gz',
-             prune=args.pt_prune)
-    # os.remove(args.tmp + '/phrase-table.gz')
-    # os.remove(args.tmp + '/reordering-table.wbe-msd-bidirectional-fe.gz')
-    shutil.move(args.tmp + '/phrase-table.gz', output_dir + '/phrase-table.gz')
-    shutil.move(args.tmp + '/reordering-table.wbe-msd-bidirectional-fe.gz', output_dir + '/reordering-table.wbe-msd-bidirectional-fe.gz')
-
-    # MERT
-    bash(quote(MOSES + '/scripts/training/mert-moses.pl') +
-         ' ' + quote(dev_src) +
-         ' ' + quote(dev_trg) +
-         ' ' + quote(MOSES + '/bin/moses2') +
-         ' ' + quote(args.tmp + '/moses.ini') +
-         ' --no-filter-phrase-table' +
-         ' --mertdir ' + quote(MOSES + '/bin/') +
-         ' --threads ' + str(args.threads) +
-         ' --decoder-flags="-threads ' + str(args.threads) + '"' +
-         ' --working-dir ' + quote(os.path.abspath(args.tmp + '/mert')))
-    shutil.move(args.tmp + '/mert/moses.ini', output_dir + '/moses.ini')
-    shutil.rmtree(args.tmp + '/mert')
-    os.remove(args.tmp + '/moses.ini')
 
 
 # Step 1: Corpus preprocessing
@@ -421,8 +333,10 @@ def iterative_backtranslation(args):
                  ' | ' + quote(MOSES + '/scripts/recaser/truecase.perl') +
                  ' --model ' + quote(args.working + '/step1/truecase-model.' + part) +
                  ' > ' + quote(args.tmp + '/dev.true.' + part))
+
     for it in range(1, args.backtranslation_iter + 1):
         for src, trg in ('src', 'trg'), ('trg', 'src'):
+            # Backtranslation
             # TODO Use cube pruning?
             bash(quote(MOSES + '/bin/moses2') +
                  ' -f ' + quote(config[(trg, src)]) + 
@@ -430,9 +344,95 @@ def iterative_backtranslation(args):
                  ' < ' + quote(args.tmp + '/train.' + trg) +
                  ' > ' + quote(args.tmp + '/train.bt') +
                  ' 2> /dev/null')
+
+            output_dir = root + '/' + src + '2' + trg + '-it' + str(it)
+            tmp = args.tmp + '/train-supervised'
+            os.mkdir(output_dir)
+            os.mkdir(tmp)
+
+            # Corpus cleaning
+            bash(quote(MOSES + '/scripts/training/clean-corpus-n.perl') +
+                 ' ' + quote(args.tmp + '/train') + ' bt ' + trg +
+                 ' ' + quote(tmp + '/clean') +
+                 ' ' + str(args.min_tokens) + ' ' + str(args.max_tokens))  # TODO Reusing min/max from step 1
+
+            # Merge both languages into a single file
+            bash('paste -d " ||| " ' + quote(tmp + '/clean.bt') +
+                 ' /dev/null /dev/null /dev/null /dev/null ' + quote(tmp + '/clean.' + trg) +
+                 ' > ' + quote(tmp + '/clean.txt'))
+
+            # Align
+            bash(quote(FAST_ALIGN + '/fast_align') +
+                 ' -i ' + quote(tmp + '/clean.txt') + ' -d -o -v' +
+                 ' > ' + quote(tmp + '/forward.align'))
+            bash(quote(FAST_ALIGN + '/fast_align') +
+                 ' -i ' + quote(tmp + '/clean.txt') + ' -d -o -v -r' +
+                 ' > ' + quote(tmp + '/reverse.align'))
+            os.remove(tmp + '/clean.txt')
+
+            # Symmetrization
+            bash(quote(FAST_ALIGN + '/atools') +
+                 ' -i ' + quote(tmp + '/forward.align') +
+                 ' -j ' + quote(tmp + '/reverse.align') +
+                 ' -c grow-diag-final-and' +
+                 ' > ' + quote(tmp + '/aligned.grow-diag-final-and'))
+            os.remove(tmp + '/forward.align')
+            os.remove(tmp + '/reverse.align')
+
+            # Build model
+            bash(quote(MOSES + '/scripts/training/train-model.perl') +
+                 ' -model-dir ' + quote(tmp) +
+                 ' -corpus ' + quote(tmp) + '/clean' +
+                 ' -f bt -e ' + trg +
+                 ' -alignment grow-diag-final-and' +
+                 ' -reordering msd-bidirectional-fe' +
+                 ' -max-phrase-length 5' +
+                 ' -temp-dir ' + quote(tmp + '/tmp') +
+                 ' -lm "0:{}:{}:8"'.format(args.lm_order, os.path.abspath(args.working + '/step2/' + trg + '.blm')) +
+                 ' -first-step 4' +
+                 ' -score-options="-MinScore 2:0.0001"' +
+                 ' -cores ' + str(args.threads) +
+                 ' -parallel -sort-buffer-size 10G -sort-batch-size 253 -sort-compress gzip' +
+                 ' -sort-parallel ' + str(args.threads))
+            shutil.move(tmp + '/phrase-table.gz', args.tmp + '/' + src + '2' + trg + '.phrase-table.gz')
+            shutil.move(tmp + '/reordering-table.wbe-msd-bidirectional-fe.gz', output_dir)
+            shutil.rmtree(tmp)
+
+            # os.remove(args.tmp + '/train.bt')
+            shutil.move(args.tmp + '/train.bt', output_dir + '/train.bt')
+
+        for src, trg in ('src', 'trg'), ('trg', 'src'):
+            output_dir = root + '/' + src + '2' + trg + '-it' + str(it)
+
+            # Merge phrase-tables
+            phrase2scores = {}
+            with gzip.open(args.tmp + '/' + trg + '2' + src + '.phrase-table.gz', mode='rt', encoding='utf-8', errors='surrogateescape') as f:
+                for line in f:
+                    cols = line.split('|||')
+                    phrase2scores[(cols[1].strip(), cols[0].strip())] = cols[2].strip()
+            with gzip.open(args.tmp + '/' + src + '2' + trg + '.phrase-table.gz', mode='rt', encoding='utf-8', errors='surrogateescape') as fin:
+                with gzip.open(output_dir + '/phrase-table.gz', mode='xt', encoding='utf-8', errors='surrogateescape') as fout:
+                    for line in fin:
+                        cols = line.split('|||')
+                        scores = phrase2scores.get((cols[0].strip(), cols[1].strip()))
+                        if scores is not None:
+                            cols[2] = ' ' + ' '.join(cols[2].strip().split()[2:] + scores.strip().split()[2:]) + ' '
+                            print('|||'.join(cols), end='', file=fout)
+            del phrase2scores
+
+            # Binarize model
+            binarize(args.tmp + '/moses.ini',
+                     output_dir + '/probing-table',
+                     os.path.abspath(args.working + '/step2/' + trg + '.blm'),
+                     args.lm_order,
+                     output_dir + '/phrase-table.gz',
+                     output_dir + '/reordering-table.wbe-msd-bidirectional-fe.gz',
+                     prune=args.pt_prune)
+
+            # Get development
             if args.supervised_tuning is not None:
-                src_dev = args.tmp + '/dev.true.' + src
-                trg_dev = args.tmp + '/dev.true.' + trg
+                dev_src = args.tmp + '/dev.true.' + src
+                dev_trg = args.tmp + '/dev.true.' + trg
             else:
                 bash(quote(MOSES + '/bin/moses2') +
                      ' -f ' + quote(config[(trg, src)]) +
@@ -440,21 +440,29 @@ def iterative_backtranslation(args):
                      ' < ' + quote(args.working + '/step1/dev.true.' + trg) +
                      ' > ' + quote(args.tmp + '/dev.bt') +
                      ' 2> /dev/null')
-                src_dev = args.tmp + '/dev.bt'
-                trg_dev = args.working + '/step1/dev.true.' + trg
-            train_supervised(args,
-                             args.tmp + '/train.bt',
-                             args.tmp + '/train.' + trg,
-                             src_dev,
-                             trg_dev,
-                             args.working + '/step2/' + trg + '.blm',
-                             args.lm_order,
-                             root + '/' + src + '2' + trg + '-it' + str(it))
-            # os.remove(args.tmp + '/train.bt')
-            shutil.move(args.tmp + '/train.bt', root + '/' + src + '2' + trg + '-it' + str(it) + '/train.bt')
+                dev_src = args.tmp + '/dev.bt'
+                dev_trg = args.working + '/step1/dev.true.' + trg
+
+            # MERT
+            bash(quote(MOSES + '/scripts/training/mert-moses.pl') +
+                 ' ' + quote(dev_src) +
+                 ' ' + quote(dev_trg) +
+                 ' ' + quote(MOSES + '/bin/moses2') +
+                 ' ' + quote(args.tmp + '/moses.ini') +
+                 ' --no-filter-phrase-table' +
+                 ' --mertdir ' + quote(MOSES + '/bin/') +
+                 ' --threads ' + str(args.threads) +
+                 ' --decoder-flags="-threads ' + str(args.threads) + '"' +
+                 ' --working-dir ' + quote(os.path.abspath(args.tmp + '/mert')))
+            shutil.move(args.tmp + '/mert/moses.ini', output_dir + '/moses.ini')
+            shutil.rmtree(args.tmp + '/mert')
+            os.remove(args.tmp + '/moses.ini')
             if args.supervised_tuning is None:
                 os.remove(args.tmp + '/dev.bt')
-            config[(src, trg)] = root + '/' + src + '2' + trg + '-it' + str(it) + '/moses.ini'
+            config[(src, trg)] = output_dir + '/moses.ini'  # TODO We will use the new weights for backtranslation in the other direction
+
+        os.remove(args.tmp + '/src2trg.phrase-table.gz')
+        os.remove(args.tmp + '/trg2src.phrase-table.gz')
 
     shutil.copy(config[('src', 'trg')], args.working + '/src2trg.moses.ini')
     shutil.copy(config[('trg', 'src')], args.working + '/trg2src.moses.ini')
