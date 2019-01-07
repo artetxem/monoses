@@ -22,7 +22,8 @@ import train
 
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-MOSES = ROOT + '/third-party/moses'
+THIRD_PARTY = os.path.abspath(os.environ['MONOSES_THIRD_PARTY']) if 'MONOSES_THIRD_PARTY' in os.environ else ROOT + '/third-party'
+MOSES = THIRD_PARTY + '/moses'
 
 
 def bash(command):
@@ -73,7 +74,7 @@ def main():
         elif args.step == 7:
             command += ' -f ' + quote(args.model + '/step7/' + direction + '.moses.ini')
         elif args.step == 8:
-            command += ' -f ' + quote(args.model + '/step8/' + direction + '-it3/default.moses.ini')  # TODO Bukaerakoa jarri
+            command += ' -f ' + quote(args.model + '/step8/' + direction + '.moses.ini')
         command += ' --threads ' + str(args.threads)
         command += ' 2> /dev/null'
     command += ' | ' + quote(MOSES + '/scripts/recaser/detruecase.perl')

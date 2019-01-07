@@ -1,0 +1,115 @@
+import java.math.*;
+import java.util.*;
+import java.io.*;
+
+***(1)***
+public class __new_metric_CLASS_name__ extends EvaluationMetric
+{
+  /********************************************
+    private data members for this error metric
+  ********************************************/
+
+  ***(2)***
+  private ;
+  private ;
+  private ;
+
+  /*
+     You already have access to these data members of the parent
+     class (EvaluationMetric):
+         int numSentences;
+           number of sentences in the MERT set
+         int refsPerSen;
+           number of references per sentence
+         String[][] refSentences;
+           refSentences[i][r] stores the r'th reference of the i'th
+           source sentence (both indices are 0-based)
+  */
+  /********************************************
+  ********************************************/
+
+  public constructorNameMustMatchClassName(String[] Metric_options)
+  {
+
+                ***(3)***
+
+    //
+    //
+    // process the Metric_options array
+    //
+    //
+
+    initialize(); // set the data members of the metric
+  }
+
+  protected void initialize()
+  {
+    ***(4)***
+    metricName = "XXXXXXXX";    <- pick a metric name
+    toBeMinimized = true/false; <- should it be minimized?
+    suffStatsCount = ???;       <- how many SS does the metric need?
+
+    ***(5)***
+    /* here you make calls to any methods that set the data members */
+    /* here you make calls to any methods that set the data members */
+    /* here you make calls to any methods that set the data members */
+  }
+
+  ***(6)***
+  public double bestPossibleScore() { return ???; }
+    --> what's the best score of the metric? <--
+  public double worstPossibleScore() { return ???; }
+    --> what's the worst score of the metric? <--
+
+  ***(7)***
+  /* here you define any methods that set the data members */
+  /* here you define any methods that set the data members */
+  /* here you define any methods that set the data members */
+
+  ***(8)***
+  public int[] suffStats(String cand_str, int i) throws Exception
+  {
+    int[] stats = new int[suffStatsCount];
+
+    //
+    //
+    // set contents of stats[] here!
+    //
+    //
+
+    return stats;
+  }
+
+  ***(9a)***
+  public double score(int[] stats)
+  {
+    if (stats.length != suffStatsCount) {
+      System.out.println("Mismatch between stats.length and suffStatsCount (" + stats.length + " vs. " + suffStatsCount + ") in NewMetric.score(int[])");
+      System.exit(1);
+    }
+
+    double sc = 0.0;
+
+    //
+    //
+    // set sc here!
+    //
+    //
+
+    return sc;
+  }
+
+  ***(9b)***
+  public void printDetailedScore_fromStats(int[] stats, boolean oneLiner)
+  {
+    System.out.println(metricName + " = " + score(stats));
+
+    //
+    //
+    // optional (for debugging purposes)
+    //
+    //
+  }
+
+}
+
