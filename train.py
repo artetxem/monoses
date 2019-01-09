@@ -404,6 +404,9 @@ def iterative_backtranslation(args):
         for src, trg in ('src', 'trg'), ('trg', 'src'):
             output_dir = root + '/' + src + '2' + trg + '-it' + str(it)
 
+            # Phrase table format
+            # SRC TRG ||| TRG2SRC_PROB TRG2SRC_LEX SRC2TRG_PROB SRC2TRG_LEX ||| TRG_COUNT SRC_COUNT JOINT_COUNT
+
             # Merge phrase-tables
             phrase2scores = {}
             with gzip.open(args.tmp + '/' + trg + '2' + src + '.phrase-table.gz', mode='rt', encoding='utf-8', errors='surrogateescape') as f:
@@ -416,7 +419,7 @@ def iterative_backtranslation(args):
                         cols = line.split('|||')
                         scores = phrase2scores.get((cols[0].strip(), cols[1].strip()))
                         if scores is not None:
-                            cols[2] = ' ' + ' '.join(cols[2].strip().split()[2:] + scores.strip().split()[2:]) + ' '
+                            cols[2] = ' ' + ' '.join(scores.strip().split()[2:] + cols[2].strip().split()[2:]) + ' '
                             print('|||'.join(cols), end='', file=fout)
             del phrase2scores
 
