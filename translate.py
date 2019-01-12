@@ -18,6 +18,8 @@ import os
 import subprocess
 from shlex import quote
 
+import train
+
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MOSES = ROOT + '/third-party/moses'
@@ -33,24 +35,52 @@ def main():
     parser.add_argument('-r', '--reverse', action='store_true', help='Use the reverse model (trg->src)')
     parser.add_argument('--src', metavar='STR', required=True, help='Input language code')
     parser.add_argument('--trg', metavar='STR', required=True, help='Output language code')
+    parser.add_argument('--tok', action='store_true', help='Tokenized input/output')
+    parser.add_argument('--step', metavar='N', type=int, default=10, help='Step number (defaults to 10)')
+    parser.add_argument('--nmt-checkpoints', nargs='+', metavar='N', default=[10, 20, 30, 40, 50, 60], help='Use a checkpoint ensemble over the given iterations')
     parser.add_argument('--threads', metavar='N', type=int, default=20, help='Number of threads (defaults to 20)')
-    parser.add_argument('--tok', action='store_true', help='Do not detokenize')
+    parser.add_argument('--cpu', action='store_true', help='Force CPU decoding')
+    parser.add_argument('--fp16', action='store_true', help='Enable FP16 decoding')
     args = parser.parse_args()
 
     direction = 'trg2src' if args.reverse else 'src2trg'
-    detok = '' if args.tok else ' | ' + quote(MOSES + '/scripts/tokenizer/detokenizer.perl') + ' -q -l ' + quote(args.trg)
-    bash(quote(MOSES + '/scripts/tokenizer/tokenizer.perl') +
-               ' -l ' + quote(args.src) + ' -threads ' + str(args.threads) +
-               ' 2> /dev/null' +
-         ' | ' + quote(MOSES + '/scripts/recaser/truecase.perl') +
-               ' --model ' + quote(args.model + '/step1/truecase-model.' + direction[:3]) +
-         ' | ' + quote(MOSES + '/bin/moses2') +
-               ' -f ' + quote(args.model + '/' + direction + '.moses.ini') +
-               ' --threads ' + str(args.threads) +
-               ' 2> /dev/null' +
-         ' | ' + quote(MOSES + '/scripts/recaser/detruecase.perl') +
-         detok
-         )
+
+    command = 'cat -'
+    if not args.tok:
+        command += ' | ' + train.tokenize_command(args, args.src)
+    command += ' | ' + quote(MOSES + '/scripts/recaser/truecase.perl')
+    command += ' --model ' + quote(args.model + '/step1/truecase-model.' + direction[:3])
+    if args.step == 10:
+        command += ' | python3 ' + quote(train.SUBWORD_NMT + '/subword_nmt/apply_bpe.py') + ' -c ' + quote(args.model + '/step9/bpe.codes')
+        command += ' | python3 ' + quote(train.FAIRSEQ + '/interactive.py') + ' ' + quote(args.model + '/step10/data.bin')
+        command += ' --path '
+        command += ':'.join([quote(args.model + '/step10/' + direction + '.' + str(it) + '.pt') for it in args.nmt_checkpoints])
+        command += ' --source-lang src --target-lang trg'
+        command += ' --beam 5'
+        command += ' --max-tokens 1000'
+        command += ' --buffer-size 10000'
+        if args.cpu:
+            command += ' --cpu'
+        if args.fp16:
+            command += ' --fp16'
+        command += ' | grep -P \'^H\t\''
+        command += ' | cut -f3'
+        command += ' | sed -r \'s/(@@ )|(@@ ?$)//g\''
+    else:
+        command += ' | ' + quote(MOSES + '/bin/moses2')
+        if args.step == 6:
+            command += ' -f ' + quote(args.model + '/step6/' + direction + '.moses.ini')
+        elif args.step == 7:
+            command += ' -f ' + quote(args.model + '/step7/' + direction + '.moses.ini')
+        elif args.step == 8:
+            command += ' -f ' + quote(args.model + '/step8/' + direction + '-it3/default.moses.ini')  # TODO Bukaerakoa jarri
+        command += ' --threads ' + str(args.threads)
+        command += ' 2> /dev/null'
+    command += ' | ' + quote(MOSES + '/scripts/recaser/detruecase.perl')
+    if not args.tok:
+        command += ' | ' + quote(MOSES + '/scripts/tokenizer/detokenizer.perl') + ' -q -l ' + quote(args.trg)
+
+    bash(command)
 
 
 if __name__ == '__main__':

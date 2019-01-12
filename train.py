@@ -26,13 +26,19 @@ from shlex import quote
 ROOT = os.path.dirname(os.path.abspath(__file__))
 FAST_ALIGN = ROOT + '/third-party/fast_align/build'
 MOSES = ROOT + '/third-party/moses'
+FAIRSEQ = ROOT + '/third-party/fairseq'
 VECMAP = ROOT + '/third-party/vecmap'
+SUBWORD_NMT = ROOT + '/third-party/subword-nmt'
 PHRASE2VEC = ROOT + '/third-party/phrase2vec/word2vec'
 TRAINING = ROOT + '/training'
 
 
 def bash(command):
     subprocess.run(['bash', '-c', command])
+
+
+def count_lines(path):
+    return int(subprocess.run(['wc', '-l', path], encoding='utf-8', stdout=subprocess.PIPE).stdout.strip().split()[0])
 
 
 def binarize(output_config, output_pt, lm_path, lm_order, phrase_table, reordering=None, pt_scores=4, prune=100):
@@ -472,12 +478,196 @@ def iterative_backtranslation(args):
         os.remove(args.tmp + '/src2trg.phrase-table.gz')
         os.remove(args.tmp + '/trg2src.phrase-table.gz')
 
-    shutil.copy(config[('src', 'trg')], args.working + '/src2trg.moses.ini')
-    shutil.copy(config[('trg', 'src')], args.working + '/trg2src.moses.ini')
+    shutil.copy(config[('src', 'trg')], root + '/src2trg.moses.ini')
+    shutil.copy(config[('trg', 'src')], root + '/trg2src.moses.ini')
     # os.remove(args.tmp + '/train.src')
     # os.remove(args.tmp + '/train.trg')
     shutil.move(args.tmp + '/train.src', root + '/train.src')
     shutil.move(args.tmp + '/train.trg', root + '/train.trg')
+
+
+# Step 9: Synthetic parallel corpus generation
+def generate_bitext(args):
+    root = args.working + '/step9'
+    os.mkdir(root)
+
+    # Concatenate and shuffle both corpora oversampling the smallest one, and learn BPE on it
+    src_lines = count_lines(args.working + '/step1/train.true.src')
+    trg_lines = count_lines(args.working + '/step1/train.true.trg')
+    if src_lines > trg_lines:
+        max_lines, max_corpus = src_lines, args.working + '/step1/train.true.src'
+        min_lines, min_corpus = trg_lines, args.working + '/step1/train.true.trg'
+    else:
+        max_lines, max_corpus = trg_lines, args.working + '/step1/train.true.trg'
+        min_lines, min_corpus = src_lines, args.working + '/step1/train.true.src'
+    bash('cat ' + quote(min_corpus) +
+         ' | shuf' +
+         ' | head -' + str(max_lines % min_lines) +
+         ' | cat - ' + ' '.join([quote(min_corpus)] * (max_lines // min_lines)) + ' ' + quote(max_corpus) +
+         ' | shuf' +
+         ' > ' + quote(args.tmp + '/all.txt'))
+    bash('python3 ' + quote(SUBWORD_NMT + '/subword_nmt/learn_bpe.py') + ' -s ' + str(args.bpe_tokens) +
+         ' < ' + quote(args.tmp + '/all.txt') +
+         ' > ' + quote(root + '/bpe.codes'))
+    os.remove(args.tmp + '/all.txt')
+
+    # Backtranslate and apply BPE
+    for src, trg in ('src', 'trg'), ('trg', 'src'):
+        bash('head -' + str(args.bitext_sentences) + ' ' + quote(args.working + '/step1/train.true.' + src) +
+             ' | ' + quote(MOSES + '/bin/moses2') +
+             ' -f ' + quote(args.working + '/step8/' + src + '2' + trg + '.moses.ini') +
+             ' -search-algorithm 1 -cube-pruning-pop-limit {0} -s {0}'.format(args.cube_pruning_pop_limit) +
+             ' --threads ' + str(args.threads) +
+             ' 2> /dev/null' +
+             ' | python3 ' + quote(SUBWORD_NMT + '/subword_nmt/apply_bpe.py') +
+             ' -c ' + quote(root + '/bpe.codes') +
+             ' > ' + quote(root + '/train.' + trg + '2' + src + '.' + trg))
+        bash('python3 ' + quote(SUBWORD_NMT + '/subword_nmt/apply_bpe.py') +
+             ' -c ' + quote(root + '/bpe.codes') +
+             ' < ' + quote(args.working + '/step1/train.true.' + src) +
+             ' > ' + quote(root + '/train.' + trg + '2' + src + '.' + src))
+
+    # Extract vocabulary
+    bash('cat ' + quote(root + '/train.trg2src.src') + ' ' + quote(root + '/train.src2trg.trg') +
+         ' | python3 ' + quote(SUBWORD_NMT + '/subword_nmt/get_vocab.py') +
+         ' > ' + quote(root + '/vocab.txt'))
+
+
+# Step 10: NMT training
+def train_nmt(args):
+    root = args.working + '/step10'
+    os.mkdir(root)
+
+    src_reader = open(args.working + '/step9/train.trg2src.src', encoding='utf-8', errors='surrogateescape')
+    trg_reader = open(args.working + '/step9/train.src2trg.trg', encoding='utf-8', errors='surrogateescape')
+    src2trg_src_reader = open(args.working + '/step9/train.src2trg.src', encoding='utf-8', errors='surrogateescape')
+    src2trg_trg_reader = open(args.working + '/step9/train.src2trg.trg', encoding='utf-8', errors='surrogateescape')
+    trg2src_src_reader = open(args.working + '/step9/train.trg2src.src', encoding='utf-8', errors='surrogateescape')
+    trg2src_trg_reader = open(args.working + '/step9/train.trg2src.trg', encoding='utf-8', errors='surrogateescape')
+
+    # Skip initial lines for the monolingual readers
+    for i in range(count_lines(args.working + '/step9/train.trg2src.trg')):
+        src_reader.readline()
+    for i in range(count_lines(args.working + '/step9/train.src2trg.src')):
+        trg_reader.readline()
+    
+    bash('echo . > ' + quote(args.tmp + '/dummy.src'))
+    bash('echo . > ' + quote(args.tmp + '/dummy.trg'))
+    for it in range(1, args.nmt_iter + 1):
+        print('IT {}'.format(it))
+        for src, trg, smt_src, smt_trg, mono_trg in ('src', 'trg', src2trg_src_reader, src2trg_trg_reader, trg_reader), \
+                                                    ('trg', 'src', trg2src_trg_reader, trg2src_src_reader, src_reader):
+            
+            # Compute SMT/NMT ratio
+            nmt_percentage = min(1.0, (it - 1) / (args.nmt_transition_iter - 1))
+            nmt_sentences_per_gpu = int(args.nmt_sentences_per_iter * nmt_percentage) // len(args.nmt_gpus)
+            smt_sentences = args.nmt_sentences_per_iter - nmt_sentences_per_gpu * len(args.nmt_gpus)
+
+            # Build (copy) SMT training
+            with open(args.tmp + '/train.' + src, mode='w', encoding='utf-8', errors='surrogateescape') as fsrc:
+                with open(args.tmp + '/train.' + trg, mode='w', encoding='utf-8', errors='surrogateescape') as ftrg:
+                    count = 0
+                    while count < smt_sentences:
+                        srcsent = smt_src.readline()
+                        trgsent = smt_trg.readline()
+                        if srcsent == '' or trgsent == '':
+                            smt_src.seek(0)
+                            smt_trg.seek(0)
+                        else:
+                            count += 1
+                            print(srcsent, end='', file=fsrc)
+                            print(trgsent, end='', file=ftrg)
+
+            # Build NMT training
+            if nmt_sentences_per_gpu > 0:
+                command = ''
+                for i, gpu in enumerate(args.nmt_gpus):
+                    with open(args.tmp + '/mono.' + str(gpu), mode='w', encoding='utf-8', errors='surrogateescape') as f:
+                        count = 0
+                        while count < nmt_sentences_per_gpu:
+                            sent = mono_trg.readline()
+                            if sent == '':
+                                mono_trg.seek(0)
+                            else:
+                                count += 1
+                                print(sent, end='', file=f)
+                    command += 'cat ' + quote(args.tmp + '/mono.' + str(gpu))
+                    command += ' | CUDA_VISIBLE_DEVICES=' + str(gpu)
+                    command += ' python3 ' + quote(FAIRSEQ + '/interactive.py') + ' ' + quote(args.tmp + '/' + trg + '2' + src + '.data.bin')
+                    command += ' --path ' + quote(args.tmp + '/' + trg + '2' + src + '/checkpoint_last.pt')
+                    command += ' --beam 1'
+                    if i % 2 == 0:  # TODO Assuming that the number of GPUs is even
+                        command += ' --sampling'
+                    command += ' --max-tokens 10000'
+                    command += ' --max-len-a 2'
+                    command += ' --max-len-b 5'
+                    command += ' --buffer-size ' + str(nmt_sentences_per_gpu)
+                    if args.nmt_fp16:
+                        command += ' --fp16'
+                    command += ' | grep -P \'^H\t\''
+                    command += ' | cut -f3'
+                    command += ' > ' + quote(args.tmp + '/bt.' + str(gpu))
+                    command += ' &\n'
+                bash(command + 'wait')
+                for gpu in args.nmt_gpus:
+                    bash('cat ' + quote(args.tmp + '/bt.' + str(gpu)) + ' >> ' + quote(args.tmp + '/train.' + src))
+                    bash('cat ' + quote(args.tmp + '/mono.' + str(gpu)) + ' >> ' + quote(args.tmp + '/train.' + trg))
+                    os.remove(args.tmp + '/bt.' + str(gpu))
+                    os.remove(args.tmp + '/mono.' + str(gpu))
+
+            # Binarize training data
+            bash('python3 ' + quote(FAIRSEQ + '/preprocess.py') +
+                ' --source-lang ' + src +
+                ' --target-lang ' + trg +
+                ' --trainpref ' + quote(args.tmp + '/train') +
+                ' --validpref ' + quote(args.tmp + '/dummy') +
+                ' --destdir ' + quote(args.tmp + '/' + src + '2' + trg + '.data.bin') +
+                ' --srcdict ' + quote(args.working + '/step9/vocab.txt') +
+                ' --tgtdict ' + quote(args.working + '/step9/vocab.txt') +
+                ' --workers ' + str(args.threads))
+            os.remove(args.tmp + '/train.src')
+            os.remove(args.tmp + '/train.trg')
+
+            # Train NMT
+            bash('CUDA_VISIBLE_DEVICES=' + ','.join([str(gpu) for gpu in args.nmt_gpus]) +
+                 ' python3 ' + quote(FAIRSEQ + '/train.py') + ' ' + quote(args.tmp + '/' + src + '2' + trg + '.data.bin') +
+                 ' --arch transformer_vaswani_wmt_en_de_big --share-all-embeddings' +
+                 ' --optimizer adam --adam-betas \'(0.9, 0.98)\' --clip-norm 0.0' +
+                 ' --lr-scheduler inverse_sqrt --warmup-init-lr 1e-07 --warmup-updates 4000' +
+                 ' --lr 0.0005 --min-lr 1e-09' +
+                 ' --dropout 0.3 --weight-decay 0.0 --criterion label_smoothed_cross_entropy --label-smoothing 0.1' +
+                 ' --max-tokens 2500' +
+                 ' --update-freq ' +  str(args.nmt_cumul) +
+                 ' --save-dir ' + quote(args.tmp + '/' + src + '2' + trg) +
+                 ' --save-interval 1 --save-interval-updates 0 --no-epoch-checkpoints' +
+                 ' --max-epoch 1' +
+                 ' --log-format simple --log-interval 100' +
+                 (' --fp16' if args.nmt_fp16 else ''))
+
+            # Reset training iterator
+            bash('python3 ' + quote(TRAINING + '/reset-fairseq-iterator.py') +
+                 ' ' + quote(args.tmp + '/' + src + '2' + trg + '/checkpoint_last.pt'))
+            
+            # Save checkpoint
+            if it % args.nmt_save_interval == 0:
+                shutil.copy(args.tmp + '/' + src + '2' + trg + '/checkpoint_last.pt', root + '/' + src + '2' + trg + '.' + str(it) + '.pt')
+    
+    # Save final checkpoint
+    shutil.copy(args.tmp + '/src2trg/checkpoint_last.pt', root + '/src2trg.pt')
+    shutil.copy(args.tmp + '/trg2src/checkpoint_last.pt', root + '/trg2src.pt')
+
+    # Save dictionaries
+    os.mkdir(root + '/data.bin')
+    shutil.copy(args.tmp + '/src2trg.data.bin/dict.src.txt', root + '/data.bin/dict.src.txt')
+    shutil.copy(args.tmp + '/src2trg.data.bin/dict.trg.txt', root + '/data.bin/dict.trg.txt')
+
+    # Cleaning
+    os.remove(args.tmp + '/dummy.src')
+    os.remove(args.tmp + '/dummy.trg')
+    shutil.rmtree(args.tmp + '/src2trg')
+    shutil.rmtree(args.tmp + '/trg2src')
+    shutil.rmtree(args.tmp + '/src2trg.data.bin')
+    shutil.rmtree(args.tmp + '/trg2src.data.bin')
 
 
 def main():
@@ -526,6 +716,19 @@ def main():
     backtranslation_group.add_argument('--backtranslation-iter', metavar='N', type=int, default=3, help='Number of backtranslation iterations (defaults to 3)')
     backtranslation_group.add_argument('--backtranslation-sentences', metavar='N', type=int, default=10000000, help='Number of sentences for training backtranslation (defaults to 10000000)')
 
+    bitext_group = parser.add_argument_group('Step 9', 'Synthetic parallel corpus generation')
+    bitext_group.add_argument('--bpe-tokens', metavar='N', type=int, default=32000, help='BPE vocabulary size')
+    bitext_group.add_argument('--bitext-sentences', metavar='N', type=int, default=15000000, help='Number of sentences for bitext generation (defaults to 15000000)')
+
+    nmt_group = parser.add_argument_group('Step 10', 'NMT training')
+    nmt_group.add_argument('--nmt-iter', metavar='N', type=int, default=60, help='Number of NMT training iterations (defaults to 60)')
+    nmt_group.add_argument('--nmt-sentences-per-iter', metavar='N', type=int, default=1000000, help='Number of sentences for each NMT training iteration (defaults to 1000000)')
+    nmt_group.add_argument('--nmt-save-interval', metavar='N', type=int, default=1, help='Save a checkpoint every N iterations (defaults to 1)')
+    nmt_group.add_argument('--nmt-transition-iter', metavar='N', type=int, default=30, help='Number of transition iterations between SMT and NMT backtranslation (defaults to 30)')
+    nmt_group.add_argument('--nmt-cumul', metavar='N', type=int, default=2, help='Cumulate gradients over N backwards (defaults to 2)')
+    nmt_group.add_argument('--nmt-gpus', nargs='+', metavar='N', type=int, default=[0, 1, 2, 3], help='GPU IDs for NMT training (defaults to 0 1 2 3)')
+    nmt_group.add_argument('--nmt-fp16', action='store_true', help='Enable FP16 training')
+
     args = parser.parse_args()
 
     if args.tmp is None:
@@ -553,7 +756,10 @@ def main():
                 unsupervised_tuning(args)
         if args.from_step <= 8 <= args.to_step:
             iterative_backtranslation(args)
-
+        if args.from_step <= 9 <= args.to_step:
+            generate_bitext(args)
+        if args.from_step <= 10 <= args.to_step:
+            train_nmt(args)
 
 if __name__ == '__main__':
     main()
