@@ -208,7 +208,7 @@ def map_embeddings(args):
     os.mkdir(root)
     bash('export OMP_NUM_THREADS=' + str(args.threads) + ';'
          ' python3 ' + quote(VECMAP + '/map_embeddings.py') +
-         ' --unsupervised -v' +
+         ' --' + args.vecmap_mode + ' -v' +
          ' ' + quote(args.working + '/step3/emb.src') +
          ' ' + quote(args.working + '/step3/emb.trg') +
          ' ' + quote(root + '/emb.src') +
@@ -508,6 +508,9 @@ def main():
     phrase2vec_group.add_argument('--emb-window', metavar='N', type=int, default=5, help='Max skip length between words (defauls to 5)')
     phrase2vec_group.add_argument('--emb-negative', metavar='N', type=int, default=10, help='Number of negative examples (defaults to 10)')
     phrase2vec_group.add_argument('--emb-iter', metavar='N', type=int, default=5, help='Number of training epochs (defaults to 5)')
+
+    vecmap_group = parser.add_argument_group('Step 4', 'Embedding mapping')
+    vecmap_group.add_argument('--vecmap-mode', choices=['identical', 'unsupervised'], default='identical', help='VecMap mode (defaults to identical)')
 
     tuning_group = parser.add_argument_group('Step 7', 'Unsupervised tuning')
     tuning_group.add_argument('--tuning-iter', metavar='N', type=int, default=10, help='Number of unsupervised tuning iterations (defaults to 10)')
