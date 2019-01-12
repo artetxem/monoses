@@ -88,6 +88,12 @@ def binarize(output_config, output_pt, lm_path, lm_order, phrase_table, reorderi
         print('LM0= 0.5', file=f)
 
 
+def tokenize_command(args, lang):
+    return quote(MOSES + '/scripts/tokenizer/normalize-punctuation.perl') + ' -l ' + quote(lang) + \
+           ' | ' + quote(MOSES + '/scripts/tokenizer/remove-non-printing-char.perl') + \
+           ' | ' + quote(MOSES + '/scripts/tokenizer/tokenizer.perl') + ' -q -a -l ' + quote(lang) + ' -threads ' + str(args.threads)
+
+
 # Step 1: Corpus preprocessing
 def preprocess(args):
     root = args.working + '/step1'
@@ -95,9 +101,8 @@ def preprocess(args):
     for part, corpus, lang in (('src', args.src, args.src_lang), ('trg', args.trg, args.trg_lang)):
         # Tokenize, deduplicate, clean by length, and shuffle
         bash('export LC_ALL=C;' +
-             quote(MOSES + '/scripts/tokenizer/tokenizer.perl') +
-             ' -l ' + quote(lang) + ' -threads ' + str(args.threads) +
-             ' < ' + quote(corpus) +
+             ' cat ' + quote(corpus) +
+             ' | ' + tokenize_command(args, lang) +
              ' | sort -S 10G --batch-size 253 --compress-program gzip' +
              ' --parallel ' + str(args.threads) + ' -T ' + quote(args.tmp) +
              ' | uniq' + 
@@ -292,9 +297,8 @@ def supervised_tuning(args):
     root = args.working + '/step7'
     os.mkdir(root)
     for i, part, lang in (0, 'src', args.src_lang), (1, 'trg', args.trg_lang):
-        bash(quote(MOSES + '/scripts/tokenizer/tokenizer.perl') +
-             ' -l ' + quote(lang) + ' -threads ' + str(args.threads) +
-             ' < ' + quote(args.supervised_tuning[i]) +
+        bash('cat ' + quote(args.supervised_tuning[i]) +
+             ' | ' + tokenize_command(args, lang) +
              ' | ' + quote(MOSES + '/scripts/recaser/truecase.perl') +
              ' --model ' + quote(args.working + '/step1/truecase-model.' + part) +
              ' > ' + quote(args.tmp + '/dev.true.' + part))
@@ -327,9 +331,8 @@ def iterative_backtranslation(args):
              ' > ' + quote(args.tmp + '/train.' + part))
     if args.supervised_tuning is not None:
         for i, part, lang in (0, 'src', args.src_lang), (1, 'trg', args.trg_lang):
-            bash(quote(MOSES + '/scripts/tokenizer/tokenizer.perl') +
-                 ' -l ' + quote(lang) + ' -threads ' + str(args.threads) +
-                 ' < ' + quote(args.supervised_tuning[i]) +
+            bash('cat ' + quote(args.supervised_tuning[i]) +
+                 ' | ' + tokenize_command(args, lang) +
                  ' | ' + quote(MOSES + '/scripts/recaser/truecase.perl') +
                  ' --model ' + quote(args.working + '/step1/truecase-model.' + part) +
                  ' > ' + quote(args.tmp + '/dev.true.' + part))
