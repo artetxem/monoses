@@ -86,7 +86,7 @@ def write_phrase_table(x, z, words_x, words_z, temperature, size, batch_size, mi
                 for prob, invprob, l in zip(np_probs[k-i], np_invprobs[k-i], np_ind[k-i]):
                     lexprob = np.prod([max([src2trg2prob[src][trg] for src in words_x[k].split('&#32;')]) for trg in words_z[l].split('&#32;')])
                     invlexprob = np.prod([max([trg2src2prob[trg][src] for trg in words_z[l].split('&#32;')]) for src in words_x[k].split('&#32;')])
-                    print('{0} ||| {1} ||| {2} {3} {4} {5} ||| ||| ||| |||'.format(words_x[k].replace('&#32;', ' '), words_z[l].replace('&#32;', ' '), prob, invprob, lexprob, invlexprob), file=f)
+                    print('{0} ||| {1} ||| {2} {3} {4} {5} ||| ||| ||| |||'.format(words_x[k].replace('&#32;', ' '), words_z[l].replace('&#32;', ' '), invprob, invlexprob, prob, lexprob), file=f)
 
 
 def main():
