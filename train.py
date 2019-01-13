@@ -35,7 +35,7 @@ def bash(command):
     subprocess.run(['bash', '-c', command])
 
 
-def binarize(output_config, output_pt, lm_path, lm_order, phrase_table, reordering=None, prune=100):
+def binarize(output_config, output_pt, lm_path, lm_order, phrase_table, reordering=None, pt_scores=4, prune=100):
     output_pt = os.path.abspath(output_pt)
     lm_path = os.path.abspath(lm_path)
 
@@ -44,7 +44,7 @@ def binarize(output_config, output_pt, lm_path, lm_order, phrase_table, reorderi
     bash(quote(MOSES + '/scripts/generic/binarize4moses2.perl') +
          ' --phrase-table ' + quote(phrase_table) +
          ' --output-dir ' + quote(output_pt) +
-         ' --num-scores 4' +
+         ' --num-scores ' + str(pt_scores) +
          ' --prune ' + str(prune) +
          reord_args)
 
@@ -67,7 +67,7 @@ def binarize(output_config, output_pt, lm_path, lm_order, phrase_table, reorderi
         print('UnknownWordPenalty', file=f)
         print('WordPenalty', file=f)
         print('PhrasePenalty', file=f)
-        print('ProbingPT name=TranslationModel0 num-features=4' +
+        print('ProbingPT name=TranslationModel0 num-features=' + str(pt_scores) +
               ' path=' + output_pt + ' input-factor=0 output-factor=0', file=f)
         if reordering is not None:
             print('LexicalReordering name=LexicalReordering0' +
@@ -81,7 +81,7 @@ def binarize(output_config, output_pt, lm_path, lm_order, phrase_table, reorderi
         print('UnknownWordPenalty0= 1', file=f)
         print('WordPenalty0= -1', file=f)
         print('PhrasePenalty0= 0.2', file=f)
-        print('TranslationModel0= 0.2 0.2 0.2 0.2', file=f)
+        print('TranslationModel0=' + (' 0.2'*pt_scores), file=f)
         if reordering is not None:
             print('LexicalReordering0= 0.3 0.3 0.3 0.3 0.3 0.3', file=f)
         print('Distortion0= 0.3', file=f)
@@ -232,6 +232,7 @@ def induce_phrase_table(args):
              ' sort -S 10G --batch-size 253 --compress-program gzip' +
              ' --parallel ' + str(args.threads) + ' -T ' + quote(args.tmp) +
              ' ' + quote(args.tmp + '/' + part + '.phrase-table') +
+             ('' if args.no_levenshtein else (' |  python3 ' + quote(TRAINING + '/add-levenshtein.py'))) +
              ' | gzip > ' + quote(root + '/' + part + '.phrase-table.gz'))
         os.remove(args.tmp + '/' + part + '.phrase-table')
 
@@ -247,6 +248,7 @@ def build_initial_model(args):
                  args.working + '/step2/' + trg + '.blm',
                  args.lm_order,
                  args.working + '/step5/' + part + '.phrase-table.gz',
+                 pt_scores= 4 if args.no_levenshtein else 6,
                  prune=args.pt_prune)
 
 
@@ -511,6 +513,9 @@ def main():
 
     vecmap_group = parser.add_argument_group('Step 4', 'Embedding mapping')
     vecmap_group.add_argument('--vecmap-mode', choices=['identical', 'unsupervised'], default='identical', help='VecMap mode (defaults to identical)')
+
+    induce_group = parser.add_argument_group('Step 5', 'Phrase-table induction')
+    induce_group.add_argument('--no-levenshtein', action='store_true', help='Do not include Levenshtein distance in the initial phrase-table')
 
     tuning_group = parser.add_argument_group('Step 7', 'Unsupervised tuning')
     tuning_group.add_argument('--tuning-iter', metavar='N', type=int, default=10, help='Number of unsupervised tuning iterations (defaults to 10)')
