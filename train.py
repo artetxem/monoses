@@ -342,9 +342,9 @@ def iterative_backtranslation(args):
     for it in range(1, args.backtranslation_iter + 1):
         for src, trg in ('src', 'trg'), ('trg', 'src'):
             # Backtranslation
-            # TODO Use cube pruning?
             bash(quote(MOSES + '/bin/moses2') +
-                 ' -f ' + quote(config[(trg, src)]) + 
+                 ' -f ' + quote(config[(trg, src)]) +
+                 ' -search-algorithm 1 -cube-pruning-pop-limit {0} -s {0}'.format(args.cube_pruning_pop_limit) +
                  ' --threads ' + str(args.threads) +
                  ' < ' + quote(args.tmp + '/train.' + trg) +
                  ' > ' + quote(args.tmp + '/train.bt') +
@@ -493,6 +493,7 @@ def main():
     parser.add_argument('--threads', metavar='N', type=int, default=20, help='Number of threads (defaults to 20)')
 
     parser.add_argument('--pt-prune', metavar='N', type=int, default=100, help='Phrase-table pruning (defaults to 100)')  # TODO Which group?
+    parser.add_argument('--cube-pruning-pop-limit', metavar='N', type=int, default=1000, help='Cube pruning pop limit for fast decoding (defaults to 1000)')  # TODO Which group?
 
     preprocessing_group = parser.add_argument_group('Step 1', 'Corpus preprocessing')
     preprocessing_group.add_argument('--min-tokens', metavar='N', type=int, default=3, help='Remove sentences with less than N tokens (defaults to 3)')
@@ -523,7 +524,7 @@ def main():
 
     backtranslation_group = parser.add_argument_group('Step 8', 'Iterative backtranslation')
     backtranslation_group.add_argument('--backtranslation-iter', metavar='N', type=int, default=3, help='Number of backtranslation iterations (defaults to 3)')
-    backtranslation_group.add_argument('--backtranslation-sentences', metavar='N', type=int, default=2000000, help='Number of sentences for training backtranslation (defaults to 2000000)')
+    backtranslation_group.add_argument('--backtranslation-sentences', metavar='N', type=int, default=10000000, help='Number of sentences for training backtranslation (defaults to 10000000)')
 
     args = parser.parse_args()
 
