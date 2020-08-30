@@ -631,7 +631,7 @@ def main():
     parser.add_argument('--src-lang', metavar='STR', required=True, help='Source language code')
     parser.add_argument('--trg-lang', metavar='STR', required=True, help='Target language code')
     parser.add_argument('--from-step', metavar='N', type=int, default=1, help='Start at step N')
-    parser.add_argument('--to-step', metavar='N', type=int, default=8, help='End at step N')
+    parser.add_argument('--to-step', metavar='N', type=int, default=10, help='End at step N')
     parser.add_argument('--working', metavar='PATH', required=True, help='Working directory')
     parser.add_argument('--tmp', metavar='PATH', help='Temporary directory')
     parser.add_argument('--threads', metavar='N', type=int, default=20, help='Number of threads (defaults to 20)')
