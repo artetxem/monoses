@@ -1,4 +1,4 @@
-# Copyright (C) 2018  Mikel Artetxe <artetxem@gmail.com>
+# Copyright (C) 2018-2020  Mikel Artetxe <artetxem@gmail.com>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -598,7 +598,8 @@ def train_nmt(args):
                  (' --fp16' if args.nmt_fp16 else ''))
 
             # Reset training iterator
-            bash('python3 ' + quote(TRAINING + '/reset-fairseq-iterator.py') +
+            bash('CUDA_VISIBLE_DEVICES=' + str(args.nmt_gpus[0]) +
+                 ' python3 ' + quote(TRAINING + '/reset-fairseq-iterator.py') +
                  ' ' + quote(args.tmp + '/' + src + '2' + trg + '/checkpoint_last.pt'))
             
             # Save checkpoint
